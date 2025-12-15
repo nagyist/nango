@@ -23,6 +23,15 @@ import deployService from './services/deploy.service.js';
 import { generate as generateDocs } from './services/docs.service.js';
 import { DryRunService } from './services/dryrun.service.js';
 import { create } from './services/function-create.service.js';
+import {
+    promptForConnection,
+    promptForEnvironment,
+    promptForFunctionName,
+    promptForFunctionToRun,
+    promptForFunctionType,
+    promptForIntegrationName,
+    promptForProjectPath
+} from './services/interactive.service.js';
 import { directoryMigration, endpointMigration, v1toV2Migration } from './services/migration.service.js';
 import { generateTests } from './services/test.service.js';
 import verificationService from './services/verification.service.js';
@@ -35,7 +44,7 @@ import { dev } from './zeroYaml/dev.js';
 import { initZero } from './zeroYaml/init.js';
 import { ReadableError } from './zeroYaml/utils.js';
 
-import type { DeployOptions, GlobalOptions } from './types.js';
+import type { DeployOptions, FunctionType, GlobalOptions } from './types.js';
 import type { NangoYamlParsed } from '@nangohq/types';
 
 class NangoCommand extends Command {
@@ -43,15 +52,24 @@ class NangoCommand extends Command {
         const cmd = new Command(name);
         cmd.option('--auto-confirm', 'Auto confirm yes to all prompts.', false);
         cmd.option('--debug', 'Run cli in debug mode, outputting verbose logs.', false);
+        // Default to true so that interactive mode is enabled by default
+        cmd.option('--no-interactive', 'Disable interactive prompts for missing arguments.', true);
+
         cmd.hook('preAction', async function (this: Command, actionCommand: Command) {
-            const { debug } = actionCommand.opts<GlobalOptions>();
-            printDebug('Debug mode enabled', debug);
-            if (debug && fs.existsSync('.env')) {
-                printDebug('.env file detected and loaded', debug);
+            const opts = actionCommand.opts<GlobalOptions>();
+
+            // opts.interactive is true by default (from the option default), or false if --no-interactive is passed.
+            // We also disable it if we are in a CI environment.
+            opts.interactive = opts.interactive && !isCI;
+
+            printDebug(`Running in ${opts.interactive ? 'interactive' : 'non-interactive'} mode.`, opts.debug);
+
+            if (opts.debug && fs.existsSync('.env')) {
+                printDebug('.env file detected and loaded', opts.debug);
             }
 
             if (!isCI) {
-                await upgradeAction(debug);
+                await upgradeAction(opts.debug);
             }
         });
 
@@ -112,9 +130,19 @@ program
     .option('--ai [claude|cursor...]', 'Optional: Setup AI agent instructions files. Supported: claude code, cursor', [])
     .option('--copy', 'Optional: Only copy files, will not npm install or pre-compile', false)
     .action(async function (this: Command) {
-        const { debug, ai, copy } = this.opts<GlobalOptions & { ai: string[]; copy: boolean }>();
+        const { debug, ai, copy, interactive } = this.opts<GlobalOptions & { ai: string[]; copy: boolean }>();
+        let [projectPath] = this.args;
         const currentPath = process.cwd();
-        const absolutePath = path.resolve(currentPath, this.args[0] || 'nango-integrations');
+        const absolutePath = path.resolve(currentPath, projectPath || 'nango-integrations');
+
+        if (interactive && !projectPath) {
+            try {
+                projectPath = await promptForProjectPath();
+            } catch (err: any) {
+                console.error(chalk.red(err.isTtyError ? "Prompt couldn't be rendered in the current environment" : 'Interactive prompt cancelled.'));
+                process.exit(1);
+            }
+        }
 
         const setupAI = async (): Promise<void> => {
             const ok = await initAI({ absolutePath, debug, aiOpts: ai });
@@ -150,16 +178,54 @@ program
     .argument('[integration]', 'Integration name, e.g. "google-calendar"')
     .argument('[name]', 'Name of the sync/action, e.g. "calendar-events"')
     .action(async function (this: Command) {
-        const { debug, sync, action, onEvent } = this.opts();
-        const [integration, name] = this.args;
+        const { debug, sync, action, onEvent, interactive } = this.opts();
+        let [integration, name] = this.args;
         const absolutePath = process.cwd();
 
-        const precheck = await verificationService.preCheck({ fullPath: absolutePath, debug });
+        const precheck = await verificationService.preCheck({ fullPath: absolutePath, debug: debug });
         if (!precheck.isZeroYaml) {
             console.log(chalk.yellow(`Function creation skipped - detected nango yaml project`));
             return;
         }
-        await create({ absolutePath, sync, action, onEvent, integration, name });
+
+        let functionType: FunctionType | undefined;
+        if (interactive) {
+            try {
+                if (!sync && !action && !onEvent) {
+                    functionType = await promptForFunctionType();
+                } else {
+                    if (sync) functionType = 'sync';
+                    else if (action) functionType = 'action';
+                    else if (onEvent) functionType = 'on-event';
+                }
+
+                if (!integration) {
+                    integration = await promptForIntegrationName({
+                        fullPath: absolutePath,
+                        isNangoFolder: precheck.isNango,
+                        isZeroYaml: precheck.isZeroYaml,
+                        debug: debug
+                    });
+                }
+                if (!name) {
+                    name = await promptForFunctionName(functionType!);
+                }
+            } catch (err: any) {
+                console.error(chalk.red(err.isTtyError ? "Prompt couldn't be rendered in the current environment" : 'Interactive prompt cancelled.'));
+                process.exit(1);
+            }
+        } else {
+            if (sync) functionType = 'sync';
+            else if (action) functionType = 'action';
+            else if (onEvent) functionType = 'on-event';
+        }
+
+        if (!functionType || !integration || !name) {
+            console.error(chalk.red('Error: Missing required arguments. Use --sync, --action, or --on-event, and provide an integration and a name.'));
+            this.help();
+        }
+
+        await create({ absolutePath, functionType, integration, name });
     });
 
 program
@@ -208,8 +274,9 @@ program
 program
     .command('dryrun')
     .description('Dry run the sync|action process to help with debugging against an existing connection in cloud.')
-    .arguments('name connection_id')
-    .option('-e [environment]', 'The Nango environment, defaults to dev.', 'dev')
+    .argument('[name]', 'The name of the sync or action to run.')
+    .argument('[connection_id]', 'The ID of the connection to use.')
+    .option('-e, --environment [environment]', 'The Nango environment, defaults to dev.', 'dev')
     .option(
         '-l, --lastSyncDate [lastSyncDate]',
         'Optional (for syncs only): last sync date to retrieve records greater than this date. The format is any string that can be successfully parsed by `new Date()` in JavaScript'
@@ -233,16 +300,49 @@ program
     .option('--validate, --validation', 'Optional: Enforce input, output and records validation', false)
     .option('--save, --save-responses', 'Optional: Save all dry run responses to a tests/mocks directory to be used alongside unit tests', false)
     .option('--diagnostics', 'Optional: Display performance diagnostics including memory usage and CPU metrics', false)
-    .action(async function (this: Command, sync: string, connectionId: string) {
-        const { autoConfirm, debug, e: environment, integrationId, validation, saveResponses } = this.opts();
+    .action(async function (this: Command) {
+        const { autoConfirm, debug, interactive, integrationId, validation, saveResponses } = this.opts();
         const shouldValidate = validation || saveResponses;
         const fullPath = process.cwd();
+        let [name, connectionId] = this.args;
+        let { e: environment } = this.opts();
 
         const precheck = await verificationService.preCheck({ fullPath, debug });
         if (!precheck.isNango) {
             console.error(chalk.red(`Not inside a Nango folder`));
             process.exitCode = 1;
             return;
+        }
+
+        if (interactive) {
+            try {
+                if (!environment) {
+                    environment = await promptForEnvironment();
+                }
+                if (!name) {
+                    const definitions = await buildDefinitions({ fullPath, debug });
+                    if (definitions.isOk()) {
+                        const functions = definitions.value.integrations
+                            .flatMap((i) => [...i.syncs, ...i.actions])
+                            .map((f) => ({ name: f.name, type: f.type as string }));
+                        name = await promptForFunctionToRun(functions);
+                    } else {
+                        console.error(chalk.red('Could not build function definitions to select from.'));
+                        process.exit(1);
+                    }
+                }
+                if (!connectionId) {
+                    connectionId = await promptForConnection(environment);
+                }
+            } catch (err: any) {
+                console.error(chalk.red(err.isTtyError ? "Prompt couldn't be rendered in the current environment" : err.message));
+                process.exit(1);
+            }
+        }
+
+        if (!name || !connectionId) {
+            console.error(chalk.red('Error: Missing required arguments "name" and "connection_id".'));
+            this.help();
         }
 
         if (!precheck.isNango || precheck.hasNangoYaml) {
@@ -269,17 +369,16 @@ program
         }
 
         const dryRun = new DryRunService({ fullPath, validation: shouldValidate, isZeroYaml: precheck.isZeroYaml });
-        await dryRun.run(
-            {
-                ...this.opts(),
-                sync,
-                connectionId,
-                optionalEnvironment: environment,
-                optionalProviderConfigKey: integrationId,
-                saveResponses
-            },
-            debug
-        );
+        await dryRun.run({
+            autoConfirm,
+            debug,
+            interactive,
+            sync: name,
+            connectionId,
+            optionalEnvironment: environment,
+            optionalProviderConfigKey: integrationId,
+            saveResponses
+        });
     });
 
 program
@@ -315,17 +414,31 @@ program
 program
     .command('deploy')
     .description('Deploy a Nango integration')
-    .arguments('environment')
+    .argument('[environment]', 'The target environment (e.g., "dev" or "prod")')
     .option('-v, --version [version]', 'Optional: Set a version of this deployment to tag this integration with.')
     .option('-s, --sync [syncName]', 'Optional deploy only this sync name.')
     .option('-a, --action [actionName]', 'Optional deploy only this action name.')
     .option('-i, --integration [integrationId]', 'Optional: Deploy all scripts related to a specific integration.')
     .option('--no-compile-interfaces', `Don't compile the ${nangoConfigFile}`, true)
     .option('--allow-destructive', 'Allow destructive changes to be deployed without confirmation', false)
-    .action(async function (this: Command, environment: string) {
+    .action(async function (this: Command, environment?: string) {
         const options = this.opts<DeployOptions>();
-        const { debug } = options;
+        const { debug, interactive } = options;
         const fullPath = process.cwd();
+
+        if (interactive && !environment) {
+            try {
+                environment = await promptForEnvironment();
+            } catch (err: any) {
+                console.error(chalk.red(err.isTtyError ? "Prompt couldn't be rendered in the current environment" : 'Interactive prompt cancelled.'));
+                process.exit(1);
+            }
+        }
+
+        if (!environment) {
+            console.error(chalk.red('Error: Missing required argument "environment".'));
+            this.help();
+        }
 
         const precheck = await verificationService.preCheck({ fullPath, debug });
         if (!precheck.isNango) {
