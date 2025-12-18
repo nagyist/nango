@@ -1,6 +1,6 @@
 {
     "name": "nango",
-    "version": "0.69.20",
+    "version": "0.70.0",
     "description": "Nango's CLI tool.",
     "type": "module",
     "bin": {
