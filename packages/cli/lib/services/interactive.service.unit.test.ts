@@ -1,7 +1,6 @@
 import inquirer from 'inquirer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import * as configService from './config.service.js';
 import {
     promptForConnection,
     promptForEnvironment,
@@ -13,11 +12,8 @@ import {
 } from './interactive.service.js';
 import { FUNCTION_TYPES } from '../types.js';
 import * as utils from '../utils.js';
-import * as definitions from '../zeroYaml/definitions.js';
 
 vi.mock('inquirer');
-vi.mock('./config.service');
-vi.mock('../zeroYaml/definitions');
 
 const mockedInquirer = inquirer as unknown as {
     prompt: vi.Mock;
@@ -25,8 +21,6 @@ const mockedInquirer = inquirer as unknown as {
 };
 mockedInquirer.Separator = vi.fn();
 
-const mockedParse = vi.spyOn(configService, 'parse');
-const mockedBuildDefinitions = vi.spyOn(definitions, 'buildDefinitions');
 const mockedParseSecretKey = vi.spyOn(utils, 'parseSecretKey').mockResolvedValue(undefined);
 
 vi.mock('@nangohq/node', () => {
@@ -65,94 +59,32 @@ describe('Interactive Service', () => {
     });
 
     describe('promptForIntegrationName', () => {
-        it('should use buildDefinitions for zero-yaml projects', async () => {
-            mockedBuildDefinitions.mockResolvedValue({
-                isOk: () => true,
-                value: {
-                    integrations: [{ providerConfigKey: 'hubspot-zero' }]
-                }
-            } as any);
-            mockedInquirer.prompt.mockResolvedValue({ integration: 'hubspot-zero' });
+        it('should list existing integrations', async () => {
+            mockedInquirer.prompt.mockResolvedValue({ integration: 'hubspot-existing' });
 
-            const name = await promptForIntegrationName({ isNangoFolder: true, isZeroYaml: true, fullPath: '/fake' });
+            const name = await promptForIntegrationName({ integrations: ['hubspot-existing'] });
 
-            expect(name).toBe('hubspot-zero');
-            expect(mockedBuildDefinitions).toHaveBeenCalled();
-            expect(mockedParse).not.toHaveBeenCalled();
+            expect(name).toBe('hubspot-existing');
             expect(mockedInquirer.prompt).toHaveBeenCalledWith([
                 expect.objectContaining({
-                    choices: ['hubspot-zero', expect.any(mockedInquirer.Separator), 'Create new integration']
-                })
-            ]);
-        });
-
-        it('should use parse for legacy projects', async () => {
-            mockedParse.mockReturnValue({
-                isOk: () => true,
-                value: {
-                    parsed: {
-                        integrations: [{ providerConfigKey: 'hubspot-legacy' }]
-                    }
-                }
-            } as any);
-            mockedInquirer.prompt.mockResolvedValue({ integration: 'hubspot-legacy' });
-
-            const name = await promptForIntegrationName({ isNangoFolder: true, isZeroYaml: false, fullPath: '/fake' });
-
-            expect(name).toBe('hubspot-legacy');
-            expect(mockedParse).toHaveBeenCalled();
-            expect(mockedBuildDefinitions).not.toHaveBeenCalled();
-            expect(mockedInquirer.prompt).toHaveBeenCalledWith([
-                expect.objectContaining({
-                    choices: ['hubspot-legacy', expect.any(mockedInquirer.Separator), 'Create new integration']
+                    choices: ['hubspot-existing', expect.any(mockedInquirer.Separator), 'Create new integration']
                 })
             ]);
         });
 
         it('should prompt for a new integration name if user chooses to create one', async () => {
-            mockedParse.mockReturnValue({
-                isOk: () => true,
-                value: {
-                    parsed: {
-                        integrations: [{ providerConfigKey: 'hubspot' }]
-                    }
-                }
-            } as any);
             mockedInquirer.prompt.mockResolvedValueOnce({ integration: 'Create new integration' }).mockResolvedValueOnce({ newIntegration: 'new-one' });
 
-            const name = await promptForIntegrationName({ isNangoFolder: true, isZeroYaml: false, fullPath: '/fake' });
+            const name = await promptForIntegrationName({ integrations: ['hubspot'] });
 
             expect(name).toBe('new-one');
             expect(mockedInquirer.prompt).toHaveBeenCalledTimes(2);
         });
 
-        it('should prompt for input if not a nango folder', async () => {
-            mockedInquirer.prompt.mockResolvedValue({ integration: 'new-integration' });
-
-            const name = await promptForIntegrationName({ isNangoFolder: false, isZeroYaml: false });
-
-            expect(name).toBe('new-integration');
-            expect(mockedParse).not.toHaveBeenCalled();
-            expect(mockedBuildDefinitions).not.toHaveBeenCalled();
-            expect(mockedInquirer.prompt).toHaveBeenCalledWith([
-                expect.objectContaining({
-                    type: 'input'
-                })
-            ]);
-        });
-
         it('should prompt for input if no integrations exist', async () => {
-            mockedParse.mockReturnValue({
-                isOk: () => true,
-                value: {
-                    parsed: {
-                        integrations: []
-                    }
-                }
-            } as any);
             mockedInquirer.prompt.mockResolvedValue({ integration: 'new-integration' });
 
-            const name = await promptForIntegrationName({ isNangoFolder: true, isZeroYaml: false, fullPath: '/fake' });
+            const name = await promptForIntegrationName({ integrations: [] });
 
             expect(name).toBe('new-integration');
             expect(mockedInquirer.prompt).toHaveBeenCalledWith([
@@ -262,7 +194,7 @@ describe('Interactive Service', () => {
         it('should throw an error if fetching connections fails', async () => {
             listConnectionsMock.mockRejectedValue(new Error('API error'));
 
-            await expect(promptForConnection('dev')).rejects.toThrow('Failed to fetch connections: API error');
+            await expect(promptForConnection('dev')).rejects.toThrow('API error');
         });
     });
 });

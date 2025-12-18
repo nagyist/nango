@@ -16,22 +16,15 @@ import { nangoConfigFile } from '@nangohq/nango-yaml';
 
 import { initAI } from './ai/init.js';
 import { generate, getVersionOutput, tscWatch } from './cli.js';
+import { MissingArgumentError } from './errors.js';
 import { migrateToZeroYaml } from './migrations/toZeroYaml.js';
 import { compileAllFiles } from './services/compile.service.js';
 import { parse } from './services/config.service.js';
 import deployService from './services/deploy.service.js';
 import { generate as generateDocs } from './services/docs.service.js';
 import { DryRunService } from './services/dryrun.service.js';
+import { Ensure } from './services/ensure.service.js';
 import { create } from './services/function-create.service.js';
-import {
-    promptForConnection,
-    promptForEnvironment,
-    promptForFunctionName,
-    promptForFunctionToRun,
-    promptForFunctionType,
-    promptForIntegrationName,
-    promptForProjectPath
-} from './services/interactive.service.js';
 import { directoryMigration, endpointMigration, v1toV2Migration } from './services/migration.service.js';
 import { generateTests } from './services/test.service.js';
 import verificationService from './services/verification.service.js';
@@ -44,7 +37,7 @@ import { dev } from './zeroYaml/dev.js';
 import { initZero } from './zeroYaml/init.js';
 import { ReadableError } from './zeroYaml/utils.js';
 
-import type { DeployOptions, FunctionType, GlobalOptions } from './types.js';
+import type { DeployOptions, GlobalOptions } from './types.js';
 import type { NangoYamlParsed } from '@nangohq/types';
 
 class NangoCommand extends Command {
@@ -52,8 +45,10 @@ class NangoCommand extends Command {
         const cmd = new Command(name);
         cmd.option('--auto-confirm', 'Auto confirm yes to all prompts.', false);
         cmd.option('--debug', 'Run cli in debug mode, outputting verbose logs.', false);
-        // Default to true so that interactive mode is enabled by default
-        cmd.option('--no-interactive', 'Disable interactive prompts for missing arguments.', true);
+        // Defining the option with --no- prefix makes it true by default.
+        // The option name in the code will be 'interactive'.
+        // Passing --no-interactive will set it to false.
+        cmd.option('--no-interactive', 'Disable interactive prompts for missing arguments.');
 
         cmd.hook('preAction', async function (this: Command, actionCommand: Command) {
             const opts = actionCommand.opts<GlobalOptions>();
@@ -133,16 +128,16 @@ program
         const { debug, ai, copy, interactive } = this.opts<GlobalOptions & { ai: string[]; copy: boolean }>();
         let [projectPath] = this.args;
         const currentPath = process.cwd();
-        const absolutePath = path.resolve(currentPath, projectPath || 'nango-integrations');
 
-        if (interactive && !projectPath) {
-            try {
-                projectPath = await promptForProjectPath();
-            } catch (err: any) {
-                console.error(chalk.red(err.isTtyError ? "Prompt couldn't be rendered in the current environment" : 'Interactive prompt cancelled.'));
-                process.exit(1);
-            }
+        try {
+            const ensure = new Ensure(interactive);
+            projectPath = await ensure.projectPath(projectPath);
+        } catch (err: any) {
+            console.error(chalk.red(err.message));
+            process.exit(1);
         }
+
+        const absolutePath = path.resolve(currentPath, projectPath);
 
         const setupAI = async (): Promise<void> => {
             const ok = await initAI({ absolutePath, debug, aiOpts: ai });
@@ -188,44 +183,31 @@ program
             return;
         }
 
-        let functionType: FunctionType | undefined;
-        if (interactive) {
-            try {
-                if (!sync && !action && !onEvent) {
-                    functionType = await promptForFunctionType();
+        try {
+            const ensure = new Ensure(interactive);
+            const functionType = await ensure.functionType(sync, action, onEvent);
+
+            let integrations: string[] = [];
+            if (precheck.isNango) {
+                const definitions = await buildDefinitions({ fullPath: absolutePath, debug: debug });
+                if (definitions.isOk()) {
+                    integrations = definitions.value.integrations.flatMap((i) => i.providerConfigKey);
                 } else {
-                    if (sync) functionType = 'sync';
-                    else if (action) functionType = 'action';
-                    else if (onEvent) functionType = 'on-event';
+                    console.error(chalk.red(definitions.error));
                 }
-
-                if (!integration) {
-                    integration = await promptForIntegrationName({
-                        fullPath: absolutePath,
-                        isNangoFolder: precheck.isNango,
-                        isZeroYaml: precheck.isZeroYaml,
-                        debug: debug
-                    });
-                }
-                if (!name) {
-                    name = await promptForFunctionName(functionType!);
-                }
-            } catch (err: any) {
-                console.error(chalk.red(err.isTtyError ? "Prompt couldn't be rendered in the current environment" : 'Interactive prompt cancelled.'));
-                process.exit(1);
             }
-        } else {
-            if (sync) functionType = 'sync';
-            else if (action) functionType = 'action';
-            else if (onEvent) functionType = 'on-event';
-        }
 
-        if (!functionType || !integration || !name) {
-            console.error(chalk.red('Error: Missing required arguments. Use --sync, --action, or --on-event, and provide an integration and a name.'));
-            this.help();
-        }
+            integration = await ensure.integration(integration, { integrations });
+            name = await ensure.functionName(name, functionType);
 
-        await create({ absolutePath, functionType, integration, name });
+            await create({ absolutePath, functionType, integration, name });
+        } catch (err: any) {
+            console.error(chalk.red(err.message));
+            if (err instanceof MissingArgumentError) {
+                this.help();
+            }
+            process.exit(1);
+        }
     });
 
 program
@@ -314,35 +296,28 @@ program
             return;
         }
 
-        if (interactive) {
-            try {
-                if (!environment) {
-                    environment = await promptForEnvironment();
-                }
-                if (!name) {
-                    const definitions = await buildDefinitions({ fullPath, debug });
-                    if (definitions.isOk()) {
-                        const functions = definitions.value.integrations
-                            .flatMap((i) => [...i.syncs, ...i.actions])
-                            .map((f) => ({ name: f.name, type: f.type as string }));
-                        name = await promptForFunctionToRun(functions);
-                    } else {
-                        console.error(chalk.red('Could not build function definitions to select from.'));
-                        process.exit(1);
-                    }
-                }
-                if (!connectionId) {
-                    connectionId = await promptForConnection(environment);
-                }
-            } catch (err: any) {
-                console.error(chalk.red(err.isTtyError ? "Prompt couldn't be rendered in the current environment" : err.message));
+        try {
+            const ensure = new Ensure(interactive);
+            environment = await ensure.environment(environment);
+
+            const definitions = await buildDefinitions({ fullPath, debug });
+            if (definitions.isOk()) {
+                const functions = definitions.value.integrations
+                    .flatMap((i) => [...i.syncs, ...i.actions])
+                    .map((f) => ({ name: f.name, type: f.type as string }));
+                name = await ensure.function(name, functions);
+            } else {
+                console.error(chalk.red('Could not build function definitions to select from.'));
                 process.exit(1);
             }
-        }
 
-        if (!name || !connectionId) {
-            console.error(chalk.red('Error: Missing required arguments "name" and "connection_id".'));
-            this.help();
+            connectionId = await ensure.connection(connectionId, environment);
+        } catch (err: any) {
+            console.error(chalk.red(err.message));
+            if (err instanceof MissingArgumentError) {
+                this.help();
+            }
+            process.exit(1);
         }
 
         if (!precheck.isNango || precheck.hasNangoYaml) {
@@ -426,18 +401,15 @@ program
         const { debug, interactive } = options;
         const fullPath = process.cwd();
 
-        if (interactive && !environment) {
-            try {
-                environment = await promptForEnvironment();
-            } catch (err: any) {
-                console.error(chalk.red(err.isTtyError ? "Prompt couldn't be rendered in the current environment" : 'Interactive prompt cancelled.'));
-                process.exit(1);
+        try {
+            const ensure = new Ensure(interactive);
+            environment = await ensure.environment(environment);
+        } catch (err: any) {
+            console.error(chalk.red(err.message));
+            if (err instanceof MissingArgumentError) {
+                this.help();
             }
-        }
-
-        if (!environment) {
-            console.error(chalk.red('Error: Missing required argument "environment".'));
-            this.help();
+            process.exit(1);
         }
 
         const precheck = await verificationService.preCheck({ fullPath, debug });

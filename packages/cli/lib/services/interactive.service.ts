@@ -1,12 +1,9 @@
-import chalk from 'chalk';
 import inquirer from 'inquirer';
 
 import { Nango } from '@nangohq/node';
 
 import { FUNCTION_TYPES } from '../types.js';
 import { parseSecretKey } from '../utils.js';
-import { parse } from './config.service.js';
-import { buildDefinitions } from '../zeroYaml/definitions.js';
 
 import type { FunctionType } from '../types.js';
 
@@ -25,36 +22,7 @@ export async function promptForFunctionType(): Promise<FunctionType> {
     return type;
 }
 
-export async function promptForIntegrationName({
-    fullPath,
-    isNangoFolder,
-    isZeroYaml,
-    debug = false
-}: {
-    fullPath?: string;
-    isNangoFolder: boolean;
-    isZeroYaml: boolean;
-    debug?: boolean;
-}): Promise<string> {
-    let integrations: string[] = [];
-    if (isNangoFolder && fullPath) {
-        if (isZeroYaml) {
-            const definitions = await buildDefinitions({ fullPath, debug: debug });
-            if (definitions.isOk()) {
-                integrations = definitions.value.integrations.flatMap((i) => i.providerConfigKey);
-            } else {
-                console.error(chalk.red(definitions.error));
-            }
-        } else {
-            const parsing = parse(fullPath, debug);
-            if (parsing.isOk()) {
-                integrations = parsing.value.parsed?.integrations.map((i) => i.providerConfigKey) || [];
-            } else {
-                console.error(chalk.red(parsing.error));
-            }
-        }
-    }
-
+export async function promptForIntegrationName({ integrations }: { integrations: string[] }): Promise<string> {
     if (integrations.length > 0) {
         const { integration } = await inquirer.prompt([
             {
@@ -142,32 +110,24 @@ export async function promptForConnection(environment: string): Promise<string> 
     await parseSecretKey(environment);
     const nango = new Nango({ secretKey: String(process.env['NANGO_SECRET_KEY']) });
 
-    try {
-        const connections = await nango.listConnections();
+    const connections = await nango.listConnections();
 
-        if (connections.connections.length === 0) {
-            throw new Error('No connections found in your project for the selected environment. Please create a connection first.');
-        }
-
-        const { connection } = await inquirer.prompt([
-            {
-                type: 'rawlist',
-                name: 'connection',
-                message: 'Which connection do you want to use?',
-                choices: connections.connections.map((c) => ({
-                    name: `${c.provider} - ${c.connection_id}`,
-                    value: c.connection_id
-                }))
-            }
-        ]);
-        return connection;
-    } catch (err: any) {
-        if (err.isTtyError) {
-            throw new Error("Prompt couldn't be rendered in the current environment");
-        } else {
-            throw new Error(`Failed to fetch connections: ${err.message}`);
-        }
+    if (connections.connections.length === 0) {
+        throw new Error('No connections found in your project for the selected environment. Please create a connection first.');
     }
+
+    const { connection } = await inquirer.prompt([
+        {
+            type: 'rawlist',
+            name: 'connection',
+            message: 'Which connection do you want to use?',
+            choices: connections.connections.map((c) => ({
+                name: `${c.provider} - ${c.connection_id}`,
+                value: c.connection_id
+            }))
+        }
+    ]);
+    return connection;
 }
 
 export async function promptForProjectPath(): Promise<string> {
