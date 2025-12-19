@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { Ensure } from './ensure.service.js';
 import * as interactive from './interactive.service.js';
-import { MissingArgumentError } from '../errors.js';
+import { MissingArgumentError } from '../utils/errors.js';
 
 describe('Ensure', () => {
     it('should return current value if it exists', async () => {
@@ -27,7 +27,7 @@ describe('Ensure', () => {
     it('should throw error if prompt fails', async () => {
         const ensure = new Ensure(true);
         vi.spyOn(interactive, 'promptForProjectPath').mockRejectedValue(new Error('Prompt failed'));
-        await expect(ensure.projectPath(undefined)).rejects.toThrow('Interactive prompt cancelled.');
+        await expect(ensure.projectPath(undefined)).rejects.toThrow('Prompt failed');
     });
 
     it('should throw TTY error if prompt fails with isTtyError', async () => {

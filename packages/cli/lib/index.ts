@@ -16,7 +16,6 @@ import { nangoConfigFile } from '@nangohq/nango-yaml';
 
 import { initAI } from './ai/init.js';
 import { generate, getVersionOutput, tscWatch } from './cli.js';
-import { MissingArgumentError } from './errors.js';
 import { migrateToZeroYaml } from './migrations/toZeroYaml.js';
 import { compileAllFiles } from './services/compile.service.js';
 import { parse } from './services/config.service.js';
@@ -28,6 +27,7 @@ import { create } from './services/function-create.service.js';
 import { directoryMigration, endpointMigration, v1toV2Migration } from './services/migration.service.js';
 import { generateTests } from './services/test.service.js';
 import verificationService from './services/verification.service.js';
+import { MissingArgumentError } from './utils/errors.js';
 import { NANGO_INTEGRATIONS_LOCATION, getNangoRootPath, isCI, printDebug, upgradeAction } from './utils.js';
 import { checkAndSyncPackageJson } from './zeroYaml/check.js';
 import { compileAll } from './zeroYaml/compile.js';
@@ -55,6 +55,13 @@ class NangoCommand extends Command {
 
             // opts.interactive is true by default (from the option default), or false if --no-interactive is passed.
             // We also disable it if we are in a CI environment.
+            if (isCI && opts.interactive) {
+                console.warn(
+                    chalk.yellow(
+                        "CI environment detected. Interactive mode has been automatically disabled to prevent hanging. Pass '--no-interactive' to silence this warning."
+                    )
+                );
+            }
             opts.interactive = opts.interactive && !isCI;
 
             printDebug(`Running in ${opts.interactive ? 'interactive' : 'non-interactive'} mode.`, opts.debug);

@@ -7,7 +7,7 @@ import {
     promptForIntegrationName,
     promptForProjectPath
 } from './interactive.service.js';
-import { MissingArgumentError } from '../errors.js';
+import { MissingArgumentError } from '../utils/errors.js';
 
 import type { FunctionType } from '../types.js';
 
