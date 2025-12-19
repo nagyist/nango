@@ -29,7 +29,11 @@ export class Ensure {
                     "Prompt couldn't be rendered in the current environment. Please use the --no-interactive flag and pass all required arguments."
                 );
             }
-            throw new Error('Interactive prompt cancelled.');
+            if (err.name === 'ExitPromptError') {
+                console.log('Interactive prompt cancelled.');
+                process.exit(0);
+            }
+            throw err;
         }
     }
 

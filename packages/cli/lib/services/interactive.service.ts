@@ -6,6 +6,7 @@ import { FUNCTION_TYPES } from '../types.js';
 import { parseSecretKey } from '../utils.js';
 
 import type { FunctionType } from '../types.js';
+import type { GetPublicConnections } from '@nangohq/types';
 
 const NEW_INTEGRATION_CHOICE = 'Create new integration';
 const OTHER_CHOICE = 'Other';
@@ -109,13 +110,16 @@ export async function promptForFunctionToRun(functions: { name: string; type: st
 export async function promptForConnection(environment: string): Promise<string> {
     await parseSecretKey(environment);
     const nango = new Nango({ secretKey: String(process.env['NANGO_SECRET_KEY']) });
-
-    const connections = await nango.listConnections();
+    let connections: GetPublicConnections['Success'];
+    try {
+        connections = await nango.listConnections();
+    } catch (err: any) {
+        throw new Error(`Failed to list connections: ${err.message}`, { cause: err });
+    }
 
     if (connections.connections.length === 0) {
         throw new Error('No connections found in your project for the selected environment. Please create a connection first.');
     }
-
     const { connection } = await inquirer.prompt([
         {
             type: 'rawlist',
