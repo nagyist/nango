@@ -20,7 +20,8 @@ const bodySchema = z
         end_user: originalBodySchema.shape.end_user.optional(),
         organization: originalBodySchema.shape.organization,
         integrations_config_defaults: originalBodySchema.shape.integrations_config_defaults,
-        overrides: originalBodySchema.shape.overrides.optional()
+        overrides: originalBodySchema.shape.overrides.optional(),
+        tags: originalBodySchema.shape.tags
     })
     .strict();
 
@@ -71,6 +72,7 @@ export const postConnectSessionsReconnect = asyncWrapper<PostPublicConnectSessio
         }
 
         const endUser = endUserRes.value;
+        const tags = body.tags || null;
 
         if (body.integrations_config_defaults || body.overrides) {
             const integrations = await configService.listProviderConfigs(trx, environment.id);
@@ -122,7 +124,8 @@ export const postConnectSessionsReconnect = asyncWrapper<PostPublicConnectSessio
                   )
                 : null,
             operationId: logCtx.id,
-            overrides: body.overrides || null
+            overrides: body.overrides || null,
+            tags
         });
         if (createConnectSession.isErr()) {
             return { status: 500, response: { error: { code: 'server_error', message: 'Failed to create connect session' } } };
